@@ -10,6 +10,9 @@ from flask import Flask, request, jsonify
 import telebot
 from telebot import types
 
+# ==============================================================================
+# 1. FLASK SERVER & CONFIG
+# ==============================================================================
 app = Flask(__name__)
 RENDER_PORT = int(os.environ.get("PORT", 10000))
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "https://pranav-smm-bot-2.onrender.com").strip()
@@ -70,7 +73,7 @@ def init_db():
 init_db()
 
 # ==============================================================================
-# सुपर एडमिन इंजन (हर एक्शन पर फ्रेश लॉगिन + सटीक ID मैपिंग)
+# 2. स्मार्टपैनल सुपर एडमिन इंजन
 # ==============================================================================
 class PanelController:
     def __init__(self):
@@ -175,7 +178,6 @@ class PanelController:
     def create_coupon(self, code, amount, piece=10):
         self.login()
         urls = [CONFIG["COUPONS_URL"], CONFIG["COUPONS_ALT"]]
-        
         for u in urls:
             try:
                 r = self.session.get(u, timeout=10)
@@ -223,6 +225,9 @@ class PanelController:
 
 panel = PanelController()
 
+# ==============================================================================
+# 3. 4-स्ट्राइक ऑटो-बैन / ऑटो-अनबैन इंजन
+# ==============================================================================
 def process_appeal(username, utr_code, photo_file=None):
     clean_utr = utr_code.strip().replace(" ", "").upper()
     conn = get_db()
@@ -270,6 +275,9 @@ def process_appeal(username, utr_code, photo_file=None):
             pass
     return {"status": "success", "attempts": 0, "msg": "खाता एक्टिव कर दिया गया है!"}
 
+# ==============================================================================
+# 4. BOT 4 ऑल-सेलेक्ट एडमिन मेनू
+# ==============================================================================
 def get_admin_markup():
     markup = types.InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -432,6 +440,9 @@ if bot4:
         except Exception:
             bot4.send_message(m.chat.id, "❌ अमान्य रकम!", reply_markup=get_admin_markup())
 
+# ==============================================================================
+# 5. FLASK API & 24/7 SELF-PING LOOP (जो छूट गया था)
+# ==============================================================================
 @app.after_request
 def apply_cors(resp):
     resp.headers["Access-Control-Allow-Origin"] = "*"
@@ -451,3 +462,14 @@ def appeal_api():
     utr = request.form.get('utr', '').strip()
     photo = request.files.get('photo')
     return jsonify(process_appeal(user, utr, photo)), 200
+
+def self_ping_loop():
+    time.sleep(30)
+    while True:
+        try:
+            requests.get(f"http://127.0.0.1:{RENDER_PORT}/", timeout=8)
+            if RENDER_EXTERNAL_URL:
+                requests.get(RENDER_EXTERNAL_URL.rstrip('/') + '/', timeout=10)
+        except Exception:
+            pass
+        time.sleep(600)
