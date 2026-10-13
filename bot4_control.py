@@ -6,6 +6,7 @@ import socket
 import sqlite3
 import requests
 import telebot
+from telebot import types
 import threading
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
@@ -14,11 +15,11 @@ import smtplib
 from flask import Flask, request, jsonify
 
 RENDER_PORT = int(os.environ.get("PORT", 5000))
-BOT4_TOKEN = os.getenv("BOT4_TOKEN", "YOUR_BOT4_TOKEN_HERE")
+BOT4_TOKEN = os.getenv("BOT4_TOKEN", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6779836173"))
 
 SENDER_EMAIL = os.getenv("SENDER_EMAIL", "pranavji628@gmail.com")
-GMAIL_APP_PASS = os.getenv("GMAIL_APP_PASS", "YOUR_16_DIGIT_GMAIL_APP_PASSWORD")
+GMAIL_APP_PASS = os.getenv("GMAIL_APP_PASS", "")
 
 PANEL_DOMAIN = os.getenv("PANEL_DOMAIN", "https://pranavsmm.shop")
 PANEL_API_KEY = os.getenv("PANEL_API_KEY", "")
@@ -38,11 +39,13 @@ def add_cors_headers(response):
     return response
 
 bot4 = None
-if BOT4_TOKEN and BOT4_TOKEN != "YOUR_BOT4_TOKEN_HERE":
+if BOT4_TOKEN:
     try:
         bot4 = telebot.TeleBot(BOT4_TOKEN)
     except Exception as e:
         print(f"Bot init error: {e}")
+
+user_states = {}
 
 def get_db():
     conn = sqlite3.connect(DB_PATH)
@@ -137,6 +140,9 @@ def self_ping_loop():
         time.sleep(300)
 
 def send_official_email_otp(target_email, username, otp_code):
+    if not SENDER_EMAIL or not GMAIL_APP_PASS:
+        return False, "SENDER_EMAIL or GMAIL_APP_PASS is missing in Render settings"
+
     orig_getaddrinfo = socket.getaddrinfo
 
     def ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
@@ -154,9 +160,9 @@ def send_official_email_otp(target_email, username, otp_code):
         <!DOCTYPE html>
         <html>
         <body style="margin:0; padding:20px; background:#f8fafc; font-family:Arial, sans-serif;">
-          <div style="max-width:480px; margin:auto; background:#ffffff; border-radius:18px; border:1px solid #e2e8f0; overflow:hidden;">
+          <div style="max-width:480px; margin:auto; background:#ffffff; border-radius:18px; border:1px solid #e2e8f0; overflow:hidden; box-shadow:0 10px 30px rgba(0,0,0,0.05);">
             <div style="background:linear-gradient(135deg, #7928ca, #5b21b6); padding:24px; text-align:center; color:#ffffff;">
-              <h1 style="margin:0; font-size:22px; font-weight:800;">PRANAV SMM PANEL</h1>
+              <h1 style="margin:0; font-size:22px; font-weight:800; letter-spacing:1px;">PRANAV SMM PANEL</h1>
               <p style="margin:4px 0 0; font-size:12px; opacity:0.9;">Security & Account Recovery System</p>
             </div>
             <div style="padding:28px 24px; text-align:center;">
@@ -164,7 +170,9 @@ def send_official_email_otp(target_email, username, otp_code):
               <div style="background:#faf5ff; border:2px dashed #7928ca; border-radius:14px; padding:16px; margin:20px 0; display:inline-block; min-width:220px;">
                 <span style="font-size:36px; font-weight:800; letter-spacing:8px; color:#6a1b9a;">{otp_code}</span>
               </div>
-              <p style="color:#64748b; font-size:12px;">This code is valid for 10 minutes only.</p>
+              <p style="color:#64748b; font-size:12px;">This code is valid for 10 minutes only. Do not share it with anyone.</p>
+              <hr style="border:none; border-top:1px solid #f1f5f9; margin:20px 0;">
+              <p style="color:#94a3b8; font-size:11px;">Automated Security Engine - Pranav SMM</p>
             </div>
           </div>
         </body>
@@ -172,11 +180,12 @@ def send_official_email_otp(target_email, username, otp_code):
         """
         msg.attach(MIMEText(html_body, "html"))
 
+        clean_pass = GMAIL_APP_PASS.replace(" ", "")
         server = smtplib.SMTP("smtp.gmail.com", 587, timeout=12)
         server.ehlo()
         server.starttls()
-        server.login(SENDER_EMAIL, GMAIL_APP_PASS)
-        server.sendmail(SENDER_EMAIL, [target_email], msg.as_string())
+        server.login(SENDER_EMAIL.strip(), clean_pass)
+        server.sendmail(SENDER_EMAIL.strip(), [target_email.strip()], msg.as_string())
         server.quit()
         return True, "Email sent successfully"
 
@@ -283,7 +292,7 @@ def appeal_api():
     if not sent_ok:
         if bot4:
             try:
-                bot4.send_message(ADMIN_ID, f"SMTP Error for {email}: {err_msg}")
+                bot4.send_message(ADMIN_ID, f"⚠️ SMTP Error for {email}: {err_msg}")
             except Exception:
                 pass
         return jsonify({"status": "error", "msg": f"Failed to send OTP to Gmail: {err_msg}"}), 200
@@ -302,12 +311,12 @@ def appeal_api():
         try:
             bot4.send_message(
                 ADMIN_ID,
-                f"*[OTP DISPATCHED]*\n"
-                f"User: `{username or email}`\n"
-                f"Gmail: `{email}`\n"
-                f"UTR: `{utr}`\n"
-                f"Code: `{otp}`\n"
-                f"Status: Sent to user inbox",
+                f"📧 *[OTP DISPATCHED]*\n━━━━━━━━━━━━━━\n"
+                f"👤 User: `{username or email}`\n"
+                f"✉️ Gmail: `{email}`\n"
+                f"💳 UTR: `{utr}`\n"
+                f"🔑 Code: `{otp}`\n\n"
+                f"✅ Status: Delivered to User Inbox",
                 parse_mode="Markdown"
             )
         except Exception:
@@ -370,11 +379,11 @@ def verify_otp_api():
         try:
             bot4.send_message(
                 ADMIN_ID,
-                f"*[USER RESTORED]*\n"
-                f"User: `{real_name}`\n"
-                f"Gmail: `{stored_email}`\n"
-                f"UTR: `{stored_utr}`\n"
-                f"Status: Account Activated on Panel",
+                f"⚡ *[USER UNBANNED & ACTIVE]*\n━━━━━━━━━━━━━━\n"
+                f"👤 User: `{real_name}`\n"
+                f"📧 Gmail: `{stored_email}`\n"
+                f"💳 UTR: `{stored_utr}`\n"
+                f"✅ Status: Activated on Database & Panel",
                 parse_mode="Markdown"
             )
         except Exception:
@@ -399,7 +408,7 @@ def add_fund_api():
     if not username:
         return jsonify({"status": "error", "msg": "Username is required!"}), 200
     if not utr or len(utr) < 8:
-        return jsonify({"status": "error", "msg": "Valid UTR is required!"}), 200
+        return jsonify({"status": "error", "msg": "Valid 12-digit UTR is required!"}), 200
     if amount <= 0:
         return jsonify({"status": "error", "msg": "Amount must be greater than zero!"}), 200
 
@@ -447,11 +456,11 @@ def add_fund_api():
         try:
             bot4.send_message(
                 ADMIN_ID,
-                f"*[ADD FUND SUCCESS]*\n"
-                f"User: `{username}`\n"
-                f"UTR: `{utr}`\n"
-                f"Amount: Rs. `{amount}`\n"
-                f"New Balance: Rs. `{new_balance}`",
+                f"💰 *[ADD FUND APPROVED]*\n━━━━━━━━━━━━━━\n"
+                f"👤 User: `{username}`\n"
+                f"💳 UTR: `{utr}`\n"
+                f"💵 Amount: Rs. `{amount}`\n"
+                f"📊 New Balance: Rs. `{new_balance}`",
                 parse_mode="Markdown"
             )
         except Exception:
@@ -459,7 +468,7 @@ def add_fund_api():
 
     return jsonify({
         "status": "success",
-        "msg": f"Rs. {amount} successfully added to balance!",
+        "msg": f"Rs. {amount} successfully added to your account balance!",
         "new_balance": new_balance
     }), 200
 
@@ -520,11 +529,11 @@ def redeem_coupon_api():
         try:
             bot4.send_message(
                 ADMIN_ID,
-                f"*[COUPON APPLIED]*\n"
-                f"User: `{username}`\n"
-                f"Coupon: `{coupon_code}`\n"
-                f"Bonus: Rs. `{amount}`\n"
-                f"New Balance: Rs. `{new_balance}`",
+                f"🎟️ *[COUPON REDEEMED]*\n━━━━━━━━━━━━━━\n"
+                f"👤 User: `{username}`\n"
+                f"🏷️ Coupon: `{coupon_code}`\n"
+                f"🎁 Bonus: Rs. `{amount}`\n"
+                f"📊 New Balance: Rs. `{new_balance}`",
                 parse_mode="Markdown"
             )
         except Exception:
@@ -537,193 +546,137 @@ def redeem_coupon_api():
         "new_balance": new_balance
     }), 200
 
-@app.route("/api/order", methods=["POST", "OPTIONS"])
-def place_order_api():
-    if request.method == "OPTIONS":
-        return jsonify({"status": "ok"}), 200
-
-    username = request.form.get("username", "").strip()
-    service_id = request.form.get("service", "").strip()
-    link = request.form.get("link", "").strip()
-    quantity_str = request.form.get("quantity", "0").strip()
-
-    try:
-        quantity = int(quantity_str)
-    except ValueError:
-        return jsonify({"status": "error", "msg": "Invalid quantity!"}), 200
-
-    if not username or not service_id or not link or quantity <= 0:
-        return jsonify({"status": "error", "msg": "All order fields are required!"}), 200
-
-    charge = 0.0
-    provider_order_id = "MANUAL"
-
-    if PROVIDER_API_URL and PROVIDER_API_KEY:
-        try:
-            res = requests.post(
-                PROVIDER_API_URL,
-                data={
-                    "key": PROVIDER_API_KEY,
-                    "action": "add",
-                    "service": service_id,
-                    "link": link,
-                    "quantity": quantity
-                },
-                timeout=10
-            ).json()
-            if "order" in res:
-                provider_order_id = str(res["order"])
-        except Exception as e:
-            provider_order_id = f"FAILED: {e}"
-
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO orders (username, service_id, link, quantity, charge, provider_order_id, status, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'PROCESSING', ?)
-    """, (username, service_id, link, quantity, charge, provider_order_id, datetime.now()))
-    conn.commit()
-    conn.close()
-
-    if bot4:
-        try:
-            bot4.send_message(
-                ADMIN_ID,
-                f"*[NEW SMM ORDER]*\n"
-                f"User: `{username}`\n"
-                f"Service: `{service_id}`\n"
-                f"Qty: `{quantity}`\n"
-                f"Link: `{link}`\n"
-                f"Provider Order ID: `{provider_order_id}`",
-                parse_mode="Markdown"
-            )
-        except Exception:
-            pass
-
-    return jsonify({
-        "status": "success",
-        "msg": "Order submitted successfully!",
-        "order_id": provider_order_id
-    }), 200
+def get_main_menu_markup():
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    b1 = types.InlineKeyboardButton("🚫 Suspend User", callback_data="btn_suspend")
+    b2 = types.InlineKeyboardButton("✅ Unban User", callback_data="btn_unban")
+    b3 = types.InlineKeyboardButton("💰 Add Balance", callback_data="btn_addbal")
+    b4 = types.InlineKeyboardButton("🔍 Check Balance", callback_data="btn_checkbal")
+    b5 = types.InlineKeyboardButton("🎟️ Create Coupon", callback_data="btn_addcoupon")
+    b6 = types.InlineKeyboardButton("📊 System Status", callback_data="btn_status")
+    markup.add(b1, b2)
+    markup.add(b3, b4)
+    markup.add(b5, b6)
+    return markup
 
 if bot4:
     @bot4.message_handler(commands=["start"])
     def send_welcome(message):
         if message.chat.id == ADMIN_ID:
-            bot4.reply_to(
-                message,
-                "*Pranav SMM Master Active!*\n\n"
-                "Commands:\n"
-                "• `/addcoupon <CODE> <AMOUNT>` - Create coupon\n"
-                "• `/suspend <user/email>` - Suspend user\n"
-                "• `/unban <user/email>` - Unban user\n"
-                "• `/balance <user>` - Check balance\n"
-                "• `/addbal <user> <amount>` - Add balance directly\n"
-                "• `/status` - Check provider & server status",
+            bot4.send_message(
+                message.chat.id,
+                "👑 *Pranav SMM Master Control Panel*\n\n"
+                "Please choose an action from the buttons below:",
+                reply_markup=get_main_menu_markup(),
+                parse_mode="Markdown"
+            )
+        else:
+            bot4.reply_to(message, "Welcome to Pranav SMM Support.")
+
+    @bot4.callback_query_handler(func=lambda call: True)
+    def handle_query(call):
+        if call.message.chat.id != ADMIN_ID:
+            return
+
+        if call.data == "btn_suspend":
+            user_states[call.message.chat.id] = "AWAIT_SUSPEND"
+            bot4.send_message(call.message.chat.id, "Send username or email to suspend:")
+        
+        elif call.data == "btn_unban":
+            user_states[call.message.chat.id] = "AWAIT_UNBAN"
+            bot4.send_message(call.message.chat.id, "Send username or email to unban:")
+
+        elif call.data == "btn_addbal":
+            user_states[call.message.chat.id] = "AWAIT_ADDBAL"
+            bot4.send_message(call.message.chat.id, "Send in format: `username amount`\nExample: `rahul12 100`", parse_mode="Markdown")
+
+        elif call.data == "btn_checkbal":
+            user_states[call.message.chat.id] = "AWAIT_CHECKBAL"
+            bot4.send_message(call.message.chat.id, "Send username to check balance:")
+
+        elif call.data == "btn_addcoupon":
+            user_states[call.message.chat.id] = "AWAIT_ADDCOUPON"
+            bot4.send_message(call.message.chat.id, "Send in format: `CODE AMOUNT`\nExample: `BONUS50 50`", parse_mode="Markdown")
+
+        elif call.data == "btn_status":
+            bot4.send_message(
+                call.message.chat.id,
+                f"*[SYSTEM STATUS]*\n"
+                f"Server: Online\n"
+                f"Port: `{RENDER_PORT}`\n"
+                f"Domain: `{PANEL_DOMAIN}`\n"
+                f"Time: `{datetime.now()}`",
+                reply_markup=get_main_menu_markup(),
                 parse_mode="Markdown"
             )
 
-    @bot4.message_handler(commands=["addcoupon"])
-    def cmd_addcoupon(message):
-        if message.chat.id != ADMIN_ID:
-            return
-        args = message.text.split()
-        if len(args) < 3:
-            bot4.reply_to(message, "Usage: `/addcoupon <CODE> <AMOUNT>`", parse_mode="Markdown")
-            return
-        code = args[1].strip().upper()
-        try:
-            amt = float(args[2].strip())
-        except ValueError:
-            bot4.reply_to(message, "Invalid amount provided!", parse_mode="Markdown")
-            return
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("INSERT OR REPLACE INTO coupons (code, amount, max_uses, used_count) VALUES (?, ?, 1000, 0)", (code, amt))
-        conn.commit()
-        conn.close()
-        bot4.reply_to(message, f"Coupon `{code}` created with Rs. {amt} value!", parse_mode="Markdown")
+    @bot4.message_handler(func=lambda msg: msg.chat.id == ADMIN_ID)
+    def handle_admin_text(message):
+        state = user_states.get(message.chat.id)
 
-    @bot4.message_handler(commands=["suspend"])
-    def cmd_suspend(message):
-        if message.chat.id != ADMIN_ID:
-            return
-        args = message.text.split()
-        if len(args) < 2:
-            bot4.reply_to(message, "Usage: `/suspend <username or email>`", parse_mode="Markdown")
-            return
-        target = args[1].strip().lower()
-        update_user_status_panel(target, "SUSPENDED")
-        bot4.reply_to(message, f"Account `{target}` suspended successfully!", parse_mode="Markdown")
+        if state == "AWAIT_SUSPEND":
+            target = message.text.strip().lower()
+            update_user_status_panel(target, "SUSPENDED")
+            user_states.pop(message.chat.id, None)
+            bot4.send_message(message.chat.id, f"🚫 `{target}` has been suspended!", reply_markup=get_main_menu_markup(), parse_mode="Markdown")
 
-    @bot4.message_handler(commands=["unban"])
-    def cmd_unban(message):
-        if message.chat.id != ADMIN_ID:
-            return
-        args = message.text.split()
-        if len(args) < 2:
-            bot4.reply_to(message, "Usage: `/unban <username or email>`", parse_mode="Markdown")
-            return
-        target = args[1].strip().lower()
-        update_user_status_panel(target, "ACTIVE")
-        bot4.reply_to(message, f"Account `{target}` restored to ACTIVE successfully!", parse_mode="Markdown")
+        elif state == "AWAIT_UNBAN":
+            target = message.text.strip().lower()
+            update_user_status_panel(target, "ACTIVE")
+            user_states.pop(message.chat.id, None)
+            bot4.send_message(message.chat.id, f"✅ `{target}` restored to ACTIVE!", reply_markup=get_main_menu_markup(), parse_mode="Markdown")
 
-    @bot4.message_handler(commands=["balance"])
-    def cmd_balance(message):
-        if message.chat.id != ADMIN_ID:
-            return
-        args = message.text.split()
-        if len(args) < 2:
-            bot4.reply_to(message, "Usage: `/balance <username>`", parse_mode="Markdown")
-            return
-        user = args[1].strip()
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT balance FROM users WHERE username=?", (user,))
-        row = cur.fetchone()
-        conn.close()
-        bal = row["balance"] if row else 0.0
-        bot4.reply_to(message, f"User `{user}` balance: Rs. {bal}", parse_mode="Markdown")
+        elif state == "AWAIT_ADDBAL":
+            parts = message.text.strip().split()
+            if len(parts) >= 2:
+                user = parts[0]
+                try:
+                    amt = float(parts[1])
+                    conn = get_db()
+                    cur = conn.cursor()
+                    cur.execute("""
+                        INSERT INTO users (username, balance) VALUES (?, ?)
+                        ON CONFLICT(username) DO UPDATE SET balance = balance + ?
+                    """, (user, amt, amt))
+                    cur.execute("SELECT balance FROM users WHERE username=?", (user,))
+                    row = cur.fetchone()
+                    conn.commit()
+                    conn.close()
+                    user_states.pop(message.chat.id, None)
+                    bot4.send_message(message.chat.id, f"💰 Added Rs. {amt} to `{user}`. New balance: Rs. {row['balance']}", reply_markup=get_main_menu_markup(), parse_mode="Markdown")
+                except ValueError:
+                    bot4.send_message(message.chat.id, "Invalid amount format. Try again:")
+            else:
+                bot4.send_message(message.chat.id, "Send in format: `username amount`", parse_mode="Markdown")
 
-    @bot4.message_handler(commands=["addbal"])
-    def cmd_addbal(message):
-        if message.chat.id != ADMIN_ID:
-            return
-        args = message.text.split()
-        if len(args) < 3:
-            bot4.reply_to(message, "Usage: `/addbal <username> <amount>`", parse_mode="Markdown")
-            return
-        user = args[1].strip()
-        try:
-            amt = float(args[2].strip())
-        except ValueError:
-            bot4.reply_to(message, "Invalid amount!", parse_mode="Markdown")
-            return
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("""
-            INSERT INTO users (username, balance) VALUES (?, ?)
-            ON CONFLICT(username) DO UPDATE SET balance = balance + ?
-        """, (user, amt, amt))
-        cur.execute("SELECT balance FROM users WHERE username=?", (user,))
-        row = cur.fetchone()
-        conn.commit()
-        conn.close()
-        bot4.reply_to(message, f"Added Rs. {amt} to `{user}`. New balance: Rs. {row['balance']}", parse_mode="Markdown")
+        elif state == "AWAIT_CHECKBAL":
+            user = message.text.strip()
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute("SELECT balance FROM users WHERE username=?", (user,))
+            row = cur.fetchone()
+            conn.close()
+            bal = row["balance"] if row else 0.0
+            user_states.pop(message.chat.id, None)
+            bot4.send_message(message.chat.id, f"👤 User `{user}` balance: Rs. {bal}", reply_markup=get_main_menu_markup(), parse_mode="Markdown")
 
-    @bot4.message_handler(commands=["status"])
-    def cmd_status(message):
-        if message.chat.id != ADMIN_ID:
-            return
-        bot4.reply_to(
-            message,
-            f"*[SYSTEM STATUS]*\n"
-            f"Server: Online\n"
-            f"Port: `{RENDER_PORT}`\n"
-            f"Domain: `{PANEL_DOMAIN}`\n"
-            f"Time: `{datetime.now()}`",
-            parse_mode="Markdown"
-        )
+        elif state == "AWAIT_ADDCOUPON":
+            parts = message.text.strip().split()
+            if len(parts) >= 2:
+                code = parts[0].upper()
+                try:
+                    amt = float(parts[1])
+                    conn = get_db()
+                    cur = conn.cursor()
+                    cur.execute("INSERT OR REPLACE INTO coupons (code, amount, max_uses, used_count) VALUES (?, ?, 1000, 0)", (code, amt))
+                    conn.commit()
+                    conn.close()
+                    user_states.pop(message.chat.id, None)
+                    bot4.send_message(message.chat.id, f"🎟️ Coupon `{code}` created with value Rs. {amt}!", reply_markup=get_main_menu_markup(), parse_mode="Markdown")
+                except ValueError:
+                    bot4.send_message(message.chat.id, "Invalid amount. Try again:")
+            else:
+                bot4.send_message(message.chat.id, "Send in format: `CODE AMOUNT`", parse_mode="Markdown")
 
 if __name__ == "__main__":
     if bot4:
