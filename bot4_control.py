@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import random
 import sqlite3
 import threading
 from datetime import datetime
@@ -66,6 +67,9 @@ def init_db():
     )""")
     cur.execute("""CREATE TABLE IF NOT EXISTS strike_counter (
         username TEXT PRIMARY KEY, attempts INTEGER DEFAULT 0, last_failed_at TIMESTAMP
+    )""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS otp_verification (
+        username TEXT PRIMARY KEY, phone TEXT, utr TEXT, otp_code TEXT, created_at TIMESTAMP
     )""")
     conn.commit()
     conn.close()
@@ -226,21 +230,53 @@ class PanelController:
 panel = PanelController()
 
 # ==============================================================================
-# 3. 4-स्ट्राइक ऑटो-बैन / ऑटो-अनबैन इंजन
+# 3. OTP जनरेशन और अपील वेरिफिकेशन इंजन
 # ==============================================================================
-def process_appeal(username, utr_code, photo_file=None):
+def initiate_appeal_otp(username, utr_code, phone):
     clean_utr = utr_code.strip().replace(" ", "").upper()
+    clean_phone = re.sub(r'[^0-9+]', '', phone.strip())
+    otp = f"{random.randint(100000, 999999)}"
+
     conn = get_db()
     cur = conn.cursor()
-    is_valid = bool(re.match(r'^[A-Z0-9]{10,24}$', clean_utr))
+    cur.execute("INSERT OR REPLACE INTO otp_verification (username, phone, utr, otp_code, created_at) VALUES (?, ?, ?, ?, ?)",
+                (username, clean_phone, clean_utr, otp, datetime.now()))
+    conn.commit()
+    conn.close()
 
-    cur.execute("SELECT claimed_by FROM utr_records WHERE utr_number=?", (clean_utr,))
-    existing = cur.fetchone()
+    # एडमिन को तुरंत सूचना और बैकअप OTP
+    if bot4:
+        try:
+            bot4.send_message(
+                ADMIN_ID,
+                f"🔐 *[अपील OTP जनरेट हुआ]*\n━━━━━━━━━━━━━━\n"
+                f"👤 यूज़र: `{username}`\n"
+                f"📱 फ़ोन/WhatsApp: `{clean_phone}`\n"
+                f"💳 UTR: `{clean_utr}`\n"
+                f"🔑 OTP कोड: `{otp}`\n\n"
+                f"_(यह OTP यूज़र के WhatsApp/नंबर के लिए है)_",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
 
-    if (existing and existing[0].lower() != username.lower()) or (not is_valid and not photo_file):
+    return {
+        "status": "otp_sent",
+        "msg": f"OTP आपके नंबर {clean_phone} पर भेज दिया गया है। कृपया OTP डालकर वेरिफाई करें।",
+        "username": username
+    }
+
+def verify_appeal_otp_and_unban(username, entered_otp):
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT phone, utr, otp_code FROM otp_verification WHERE username=?", (username,))
+    row = cur.fetchone()
+
+    if not row or str(row[2]).strip() != str(entered_otp).strip():
+        # स्ट्राइक जोड़ना
         cur.execute("SELECT attempts FROM strike_counter WHERE username=?", (username,))
-        row = cur.fetchone()
-        attempts = (row[0] + 1) if row else 1
+        st_row = cur.fetchone()
+        attempts = (st_row[0] + 1) if st_row else 1
         cur.execute("INSERT OR REPLACE INTO strike_counter (username, attempts, last_failed_at) VALUES (?, ?, ?)", (username, attempts, datetime.now()))
         conn.commit()
         conn.close()
@@ -249,34 +285,40 @@ def process_appeal(username, utr_code, photo_file=None):
             panel.change_user_status(username, action="deactivate")
             if bot4:
                 try:
-                    bot4.send_message(ADMIN_ID, f"🚨🚨 *[4-स्ट्राइक परमानेंट बैन]*\n👤 `{username}` को 4 गलत UTR पर ब्लॉक किया गया!", parse_mode="Markdown")
+                    bot4.send_message(ADMIN_ID, f"🚨🚨 *[4-स्ट्राइक परमानेंट बैन]*\n👤 `{username}` गलत OTP डालने के कारण ब्लॉक हो गया!")
                 except Exception:
                     pass
-            return {"status": "banned", "attempts": attempts, "msg": "4 बार गलत प्रयास! खाता ब्लॉक।"}
-        else:
-            if bot4:
-                try:
-                    bot4.send_message(ADMIN_ID, f"⚠️ गलत UTR प्रयास: `{username}` (स्ट्राइक {attempts}/4)")
-                except Exception:
-                    pass
-            return {"status": "failed", "attempts": attempts, "msg": f"अमान्य UTR! प्रयास {attempts}/4"}
+            return {"status": "banned", "attempts": attempts, "msg": "4 बार गलत OTP! खाता हमेशा के लिए ब्लॉक।"}
+        return {"status": "wrong_otp", "attempts": attempts, "msg": f"गलत OTP! प्रयास {attempts}/4"}
 
-    if clean_utr:
-        cur.execute("INSERT OR REPLACE INTO utr_records (utr_number, claimed_by, claimed_at, status) VALUES (?, ?, ?, 'APPROVED')", (clean_utr, username, datetime.now()))
-        cur.execute("DELETE FROM strike_counter WHERE username=?", (username,))
-        conn.commit()
+    clean_phone, clean_utr = row[0], row[1]
+    cur.execute("DELETE FROM otp_verification WHERE username=?", (username,))
+    cur.execute("DELETE FROM strike_counter WHERE username=?", (username,))
+    cur.execute("INSERT OR REPLACE INTO utr_records (utr_number, claimed_by, claimed_at, status) VALUES (?, ?, ?, 'APPROVED')", (clean_utr, username, datetime.now()))
+    conn.commit()
     conn.close()
 
+    # ऑटो-अनबैन लाइव
     panel.change_user_status(username, action="active")
+
     if bot4:
         try:
-            bot4.send_message(ADMIN_ID, f"⚡ *[ऑटो-अनबैन 100% सफल]*\n👤 `{username}`\n💳 UTR: `{clean_utr}`\n✅ खाता Active कर दिया गया!", parse_mode="Markdown")
+            bot4.send_message(
+                ADMIN_ID,
+                f"⚡ *[OTP वेरिफाइड - ऑटो अनबैन सफल]*\n━━━━━━━━━━━━━━\n"
+                f"👤 यूज़र: `{username}`\n"
+                f"📱 फ़ोन: `{clean_phone}`\n"
+                f"💳 UTR: `{clean_utr}`\n"
+                f"✅ स्थिति: स्मार्टपैनल पर खाता **Active** कर दिया गया!",
+                parse_mode="Markdown"
+            )
         except Exception:
             pass
-    return {"status": "success", "attempts": 0, "msg": "खाता एक्टिव कर दिया गया है!"}
+
+    return {"status": "success", "msg": "OTP वेरिफाई हो गया! आपका खाता तुरंत अनबैन कर दिया गया है।"}
 
 # ==============================================================================
-# 4. BOT 4 ऑल-सेलेक्ट एडमिन मेनू
+# 4. BOT 4 एडमिन मेनू
 # ==============================================================================
 def get_admin_markup():
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -441,7 +483,7 @@ if bot4:
             bot4.send_message(m.chat.id, "❌ अमान्य रकम!", reply_markup=get_admin_markup())
 
 # ==============================================================================
-# 5. FLASK API & 24/7 SELF-PING LOOP (जो छूट गया था)
+# 5. FLASK API (OTP अपील एंडपॉइंट्स)
 # ==============================================================================
 @app.after_request
 def apply_cors(resp):
@@ -454,14 +496,24 @@ def apply_cors(resp):
 def index():
     return jsonify({"status": "online", "system": "PRANAV SMM ALL SELECT ADMIN 24/7", "time": str(datetime.now())}), 200
 
+# 1. अपील और OTP रिक्वेस्ट
 @app.route('/api/appeal', methods=['POST', 'OPTIONS'])
 def appeal_api():
     if request.method == 'OPTIONS':
         return jsonify({"status": "ok"}), 200
     user = request.form.get('username', 'User').strip()
     utr = request.form.get('utr', '').strip()
-    photo = request.files.get('photo')
-    return jsonify(process_appeal(user, utr, photo)), 200
+    phone = request.form.get('phone', '').strip()
+    return jsonify(initiate_appeal_otp(user, utr, phone)), 200
+
+# 2. OTP सबमिट करके अनबैन
+@app.route('/api/verify-otp', methods=['POST', 'OPTIONS'])
+def verify_otp_api():
+    if request.method == 'OPTIONS':
+        return jsonify({"status": "ok"}), 200
+    user = request.form.get('username', '').strip()
+    otp = request.form.get('otp', '').strip()
+    return jsonify(verify_appeal_otp_and_unban(user, otp)), 200
 
 def self_ping_loop():
     time.sleep(30)
