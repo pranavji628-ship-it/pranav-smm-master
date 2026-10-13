@@ -6,12 +6,14 @@ import socket
 import sqlite3
 import requests
 import telebot
+import threading
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 import smtplib
-from flask import Flask, request, jsonify, make_response
+from flask import Flask, request, jsonify
 
+RENDER_PORT = int(os.environ.get("PORT", 5000))
 BOT4_TOKEN = os.getenv("BOT4_TOKEN", "YOUR_BOT4_TOKEN_HERE")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "6779836173"))
 
@@ -20,6 +22,9 @@ GMAIL_APP_PASS = os.getenv("GMAIL_APP_PASS", "YOUR_16_DIGIT_GMAIL_APP_PASSWORD")
 
 PANEL_DOMAIN = os.getenv("PANEL_DOMAIN", "https://pranavsmm.shop")
 PANEL_API_KEY = os.getenv("PANEL_API_KEY", "")
+
+PROVIDER_API_URL = os.getenv("PROVIDER_API_URL", "")
+PROVIDER_API_KEY = os.getenv("PROVIDER_API_KEY", "")
 
 DB_PATH = "bot4_database.db"
 
@@ -99,6 +104,20 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS orders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT,
+        service_id TEXT,
+        link TEXT,
+        quantity INTEGER,
+        charge REAL,
+        provider_order_id TEXT,
+        status TEXT DEFAULT 'PENDING',
+        created_at TIMESTAMP
+    )
+    """)
+
     cur.execute("INSERT OR IGNORE INTO coupons (code, amount, max_uses) VALUES ('PRANAV100', 100.0, 1000)")
     cur.execute("INSERT OR IGNORE INTO coupons (code, amount, max_uses) VALUES ('WELCOME50', 50.0, 500)")
 
@@ -106,6 +125,16 @@ def init_db():
     conn.close()
 
 init_db()
+
+def self_ping_loop():
+    time.sleep(10)
+    while True:
+        try:
+            url = f"https://pranav-smm-master-0cgu.onrender.com/"
+            requests.get(url, timeout=10)
+        except Exception:
+            pass
+        time.sleep(300)
 
 def send_official_email_otp(target_email, username, otp_code):
     orig_getaddrinfo = socket.getaddrinfo
@@ -204,7 +233,8 @@ def home_check():
     return jsonify({
         "status": "online",
         "service": "Pranav SMM Master Engine",
-        "features": ["OTP System", "Add Fund", "Coupon System", "Persistent Lock"],
+        "port": RENDER_PORT,
+        "features": ["OTP System", "Add Fund", "Coupon System", "Orders API", "Persistent Lock"],
         "time": str(datetime.now())
     }), 200
 
@@ -369,7 +399,7 @@ def add_fund_api():
     if not username:
         return jsonify({"status": "error", "msg": "Username is required!"}), 200
     if not utr or len(utr) < 8:
-        return jsonify({"status": "error", "msg": "Valid 12-digit UTR is required!"}), 200
+        return jsonify({"status": "error", "msg": "Valid UTR is required!"}), 200
     if amount <= 0:
         return jsonify({"status": "error", "msg": "Amount must be greater than zero!"}), 200
 
@@ -429,7 +459,7 @@ def add_fund_api():
 
     return jsonify({
         "status": "success",
-        "msg": f"Rs. {amount} successfully added to your account balance!",
+        "msg": f"Rs. {amount} successfully added to balance!",
         "new_balance": new_balance
     }), 200
 
@@ -507,6 +537,75 @@ def redeem_coupon_api():
         "new_balance": new_balance
     }), 200
 
+@app.route("/api/order", methods=["POST", "OPTIONS"])
+def place_order_api():
+    if request.method == "OPTIONS":
+        return jsonify({"status": "ok"}), 200
+
+    username = request.form.get("username", "").strip()
+    service_id = request.form.get("service", "").strip()
+    link = request.form.get("link", "").strip()
+    quantity_str = request.form.get("quantity", "0").strip()
+
+    try:
+        quantity = int(quantity_str)
+    except ValueError:
+        return jsonify({"status": "error", "msg": "Invalid quantity!"}), 200
+
+    if not username or not service_id or not link or quantity <= 0:
+        return jsonify({"status": "error", "msg": "All order fields are required!"}), 200
+
+    charge = 0.0
+    provider_order_id = "MANUAL"
+
+    if PROVIDER_API_URL and PROVIDER_API_KEY:
+        try:
+            res = requests.post(
+                PROVIDER_API_URL,
+                data={
+                    "key": PROVIDER_API_KEY,
+                    "action": "add",
+                    "service": service_id,
+                    "link": link,
+                    "quantity": quantity
+                },
+                timeout=10
+            ).json()
+            if "order" in res:
+                provider_order_id = str(res["order"])
+        except Exception as e:
+            provider_order_id = f"FAILED: {e}"
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO orders (username, service_id, link, quantity, charge, provider_order_id, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'PROCESSING', ?)
+    """, (username, service_id, link, quantity, charge, provider_order_id, datetime.now()))
+    conn.commit()
+    conn.close()
+
+    if bot4:
+        try:
+            bot4.send_message(
+                ADMIN_ID,
+                f"*[NEW SMM ORDER]*\n"
+                f"User: `{username}`\n"
+                f"Service: `{service_id}`\n"
+                f"Qty: `{quantity}`\n"
+                f"Link: `{link}`\n"
+                f"Provider Order ID: `{provider_order_id}`",
+                parse_mode="Markdown"
+            )
+        except Exception:
+            pass
+
+    return jsonify({
+        "status": "success",
+        "msg": "Order submitted successfully!",
+        "order_id": provider_order_id
+    }), 200
+
 if bot4:
     @bot4.message_handler(commands=["start"])
     def send_welcome(message):
@@ -519,7 +618,8 @@ if bot4:
                 "• `/suspend <user/email>` - Suspend user\n"
                 "• `/unban <user/email>` - Unban user\n"
                 "• `/balance <user>` - Check balance\n"
-                "• `/addbal <user> <amount>` - Add balance directly",
+                "• `/addbal <user> <amount>` - Add balance directly\n"
+                "• `/status` - Check provider & server status",
                 parse_mode="Markdown"
             )
 
@@ -611,16 +711,26 @@ if bot4:
         conn.close()
         bot4.reply_to(message, f"Added Rs. {amt} to `{user}`. New balance: Rs. {row['balance']}", parse_mode="Markdown")
 
+    @bot4.message_handler(commands=["status"])
+    def cmd_status(message):
+        if message.chat.id != ADMIN_ID:
+            return
+        bot4.reply_to(
+            message,
+            f"*[SYSTEM STATUS]*\n"
+            f"Server: Online\n"
+            f"Port: `{RENDER_PORT}`\n"
+            f"Domain: `{PANEL_DOMAIN}`\n"
+            f"Time: `{datetime.now()}`",
+            parse_mode="Markdown"
+        )
+
 if __name__ == "__main__":
     if bot4:
-        import threading
-        def run_bot():
-            try:
-                bot4.infinity_polling(skip_pending=True)
-            except Exception as e:
-                print(f"Bot polling error: {e}")
-        t = threading.Thread(target=run_bot, daemon=True)
+        t = threading.Thread(target=bot4.infinity_polling, kwargs={"skip_pending": True}, daemon=True)
         t.start()
 
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    p_thread = threading.Thread(target=self_ping_loop, daemon=True)
+    p_thread.start()
+
+    app.run(host="0.0.0.0", port=RENDER_PORT)
