@@ -4,6 +4,9 @@ import time
 import random
 import sqlite3
 import threading
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 from datetime import datetime
 import requests
 from bs4 import BeautifulSoup
@@ -22,6 +25,10 @@ BOT4_TOKEN = os.environ.get("BOT4_TOKEN", "").strip()
 ADMIN_PASS = os.environ.get("ADMIN_PASS", "pranavsmmbot").strip()
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "8585055903"))
 
+# आपकी सटीक Gmail और App Password
+SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "pranavsmmsupport@gmail.com").strip()
+GMAIL_APP_PASS = os.environ.get("GMAIL_APP_PASS", "alfrvngdvchxsfch").strip()
+
 CONFIG = {
     "SITE_URL": "https://pranavsmm.shop",
     "LOGIN_URL": "https://pranavsmm.shop/secure-admin",
@@ -31,7 +38,7 @@ CONFIG = {
     "COUPONS_URL": "https://pranavsmm.shop/secure-admin/kuponlar",
     "COUPONS_ALT": "https://pranavsmm.shop/secure-admin/coupons",
     "ADMIN_USER": "pranavbot",
-    "ADMIN_EMAIL": "pranav67me@gmail.com",
+    "ADMIN_EMAIL": SENDER_EMAIL,
     "ADMIN_PASS": ADMIN_PASS,
     "MAX_STRIKES": 4
 }
@@ -69,7 +76,7 @@ def init_db():
         username TEXT PRIMARY KEY, attempts INTEGER DEFAULT 0, last_failed_at TIMESTAMP
     )""")
     cur.execute("""CREATE TABLE IF NOT EXISTS otp_verification (
-        username TEXT PRIMARY KEY, phone TEXT, utr TEXT, otp_code TEXT, created_at TIMESTAMP
+        username TEXT PRIMARY KEY, email TEXT, utr TEXT, otp_code TEXT, created_at TIMESTAMP
     )""")
     conn.commit()
     conn.close()
@@ -77,7 +84,54 @@ def init_db():
 init_db()
 
 # ==============================================================================
-# 2. स्मार्टपैनल सुपर एडमिन इंजन
+# 2. बड़ी कंपनियों जैसा ब्रैंडेड HTML GMAIL OTP प्रेषक
+# ==============================================================================
+def send_official_email_otp(target_email, username, otp_code):
+    try:
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = f"🔒 [{otp_code}] Pranav SMM - Account Verification OTP"
+        msg['From'] = f"Pranav SMM Support <{SENDER_EMAIL}>"
+        msg['To'] = target_email
+
+        html_content = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; margin: 0; padding: 20px; }}
+            .card {{ max-width: 500px; margin: 0 auto; background: #ffffff; border-radius: 24px; padding: 35px 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); text-align: center; border: 1px solid #e2e8f0; }}
+            .brand {{ font-size: 24px; font-weight: 800; background: linear-gradient(135deg, #00f2fe, #7928ca); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 8px; }}
+            .title {{ font-size: 20px; font-weight: 700; color: #0f172a; margin-bottom: 12px; }}
+            .desc {{ font-size: 14px; color: #64748b; line-height: 1.5; margin-bottom: 25px; }}
+            .otp-box {{ background: #f8fafc; border: 2.5px dashed #7928ca; border-radius: 18px; padding: 18px; display: inline-block; font-size: 34px; font-weight: 800; letter-spacing: 8px; color: #7928ca; margin-bottom: 25px; }}
+            .warn {{ font-size: 12px; color: #94a3b8; line-height: 1.4; }}
+          </style>
+        </head>
+        <body>
+          <div class="card">
+            <div class="brand">PRANAV SMM OFFICIAL</div>
+            <div class="title">सत्यापन कोड (Security Verification)</div>
+            <div class="desc">नमस्ते <b>{username}</b>,<br>खाता सत्यापन और ऑटो-अनबैन के लिए आपका 6-अंक का OTP कोड यह है:</div>
+            <div class="otp-box">{otp_code}</div>
+            <div class="desc">यह कोड केवल 10 मिनट के लिए मान्य है। इसे किसी के साथ साझा न करें।</div>
+            <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 25px 0;">
+            <div class="warn">यदि आपने यह अनुरोध नहीं किया है, तो इस ईमेल को अनदेखा करें।<br>© 2026 pranavsmm.shop All Rights Reserved.</div>
+          </div>
+        </body>
+        </html>
+        """
+        msg.attach(MIMEText(html_content, 'html'))
+
+        server = smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=12)
+        server.login(SENDER_EMAIL, GMAIL_APP_PASS)
+        server.sendmail(SENDER_EMAIL, target_email, msg.as_string())
+        server.quit()
+        return True, "सफल"
+    except Exception as e:
+        return False, str(e)
+
+# ==============================================================================
+# 3. स्मार्टपैनल सुपर एडमिन इंजन
 # ==============================================================================
 class PanelController:
     def __init__(self):
@@ -152,7 +206,6 @@ class PanelController:
     def add_fund(self, username, amount, is_deduct=False):
         self.login()
         cid = self.get_client_id(username)
-
         act_type = "deduct" if is_deduct else "add"
         act_name = "Deduct Balance" if is_deduct else "Add Balance"
 
@@ -230,31 +283,38 @@ class PanelController:
 panel = PanelController()
 
 # ==============================================================================
-# 3. OTP जनरेशन और अपील वेरिफिकेशन इंजन
+# 4. GMAIL OTP जनरेशन और सख्त सत्यापन
 # ==============================================================================
-def initiate_appeal_otp(username, utr_code, phone):
+def initiate_appeal_gmail_otp(username, utr_code, target_email):
     clean_utr = utr_code.strip().replace(" ", "").upper()
-    clean_phone = re.sub(r'[^0-9+]', '', phone.strip())
+    email_clean = target_email.strip().lower()
+    
+    if "@" not in email_clean or "." not in email_clean:
+        return {"status": "error", "msg": "अमान्य Gmail ID दर्ज की गई है!"}
+
     otp = f"{random.randint(100000, 999999)}"
 
+    # ईमेल भेजना
+    ok, err = send_official_email_otp(email_clean, username, otp)
+    
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("INSERT OR REPLACE INTO otp_verification (username, phone, utr, otp_code, created_at) VALUES (?, ?, ?, ?, ?)",
-                (username, clean_phone, clean_utr, otp, datetime.now()))
+    cur.execute("INSERT OR REPLACE INTO otp_verification (username, email, utr, otp_code, created_at) VALUES (?, ?, ?, ?, ?)",
+                (username, email_clean, clean_utr, otp, datetime.now()))
     conn.commit()
     conn.close()
 
-    # एडमिन को तुरंत सूचना और बैकअप OTP
+    # एडमिन अलर्ट (Bot 4)
     if bot4:
         try:
             bot4.send_message(
                 ADMIN_ID,
-                f"🔐 *[अपील OTP जनरेट हुआ]*\n━━━━━━━━━━━━━━\n"
+                f"📧 *[GMAIL OTP प्रेषित]*\n━━━━━━━━━━━━━━\n"
                 f"👤 यूज़र: `{username}`\n"
-                f"📱 फ़ोन/WhatsApp: `{clean_phone}`\n"
+                f"✉️ Gmail: `{email_clean}`\n"
                 f"💳 UTR: `{clean_utr}`\n"
-                f"🔑 OTP कोड: `{otp}`\n\n"
-                f"_(यह OTP यूज़र के WhatsApp/नंबर के लिए है)_",
+                f"🔑 OTP: `{otp}`\n\n"
+                f"स्थिति: {'✅ ईमेल डिलीवर' if ok else f'⚠️ एरर ({err})'}",
                 parse_mode="Markdown"
             )
         except Exception:
@@ -262,18 +322,18 @@ def initiate_appeal_otp(username, utr_code, phone):
 
     return {
         "status": "otp_sent",
-        "msg": f"OTP आपके नंबर {clean_phone} पर भेज दिया गया है। कृपया OTP डालकर वेरिफाई करें।",
+        "msg": f"OTP कोड {email_clean} पर भेज दिया गया है। अपना इनबॉक्स चेक करें!",
         "username": username
     }
 
-def verify_appeal_otp_and_unban(username, entered_otp):
+def verify_gmail_otp_and_unban(username, entered_otp):
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT phone, utr, otp_code FROM otp_verification WHERE username=?", (username,))
+    cur.execute("SELECT email, utr, otp_code FROM otp_verification WHERE username=?", (username,))
     row = cur.fetchone()
 
+    # अगर OTP गलत है तो रिजेक्ट करें और स्ट्राइक बढ़ाएँ
     if not row or str(row[2]).strip() != str(entered_otp).strip():
-        # स्ट्राइक जोड़ना
         cur.execute("SELECT attempts FROM strike_counter WHERE username=?", (username,))
         st_row = cur.fetchone()
         attempts = (st_row[0] + 1) if st_row else 1
@@ -285,29 +345,29 @@ def verify_appeal_otp_and_unban(username, entered_otp):
             panel.change_user_status(username, action="deactivate")
             if bot4:
                 try:
-                    bot4.send_message(ADMIN_ID, f"🚨🚨 *[4-स्ट्राइक परमानेंट बैन]*\n👤 `{username}` गलत OTP डालने के कारण ब्लॉक हो गया!")
+                    bot4.send_message(ADMIN_ID, f"🚨🚨 *[4-स्ट्राइक परमानेंट बैन]*\n👤 `{username}` गलत OTP डालने पर हमेशा के लिए ब्लॉक हो गया!")
                 except Exception:
                     pass
             return {"status": "banned", "attempts": attempts, "msg": "4 बार गलत OTP! खाता हमेशा के लिए ब्लॉक।"}
-        return {"status": "wrong_otp", "attempts": attempts, "msg": f"गलत OTP! प्रयास {attempts}/4"}
+        return {"status": "wrong_otp", "attempts": attempts, "msg": f"गलत OTP कोड! प्रयास {attempts}/4"}
 
-    clean_phone, clean_utr = row[0], row[1]
+    email_clean, clean_utr = row[0], row[1]
     cur.execute("DELETE FROM otp_verification WHERE username=?", (username,))
     cur.execute("DELETE FROM strike_counter WHERE username=?", (username,))
     cur.execute("INSERT OR REPLACE INTO utr_records (utr_number, claimed_by, claimed_at, status) VALUES (?, ?, ?, 'APPROVED')", (clean_utr, username, datetime.now()))
     conn.commit()
     conn.close()
 
-    # ऑटो-अनबैन लाइव
+    # ऑटो-अनबैन
     panel.change_user_status(username, action="active")
 
     if bot4:
         try:
             bot4.send_message(
                 ADMIN_ID,
-                f"⚡ *[OTP वेरिफाइड - ऑटो अनबैन सफल]*\n━━━━━━━━━━━━━━\n"
+                f"⚡ *[GMAIL OTP सत्यापित - ऑटो अनबैन]*\n━━━━━━━━━━━━━━\n"
                 f"👤 यूज़र: `{username}`\n"
-                f"📱 फ़ोन: `{clean_phone}`\n"
+                f"📧 Gmail: `{email_clean}`\n"
                 f"💳 UTR: `{clean_utr}`\n"
                 f"✅ स्थिति: स्मार्टपैनल पर खाता **Active** कर दिया गया!",
                 parse_mode="Markdown"
@@ -315,10 +375,10 @@ def verify_appeal_otp_and_unban(username, entered_otp):
         except Exception:
             pass
 
-    return {"status": "success", "msg": "OTP वेरिफाई हो गया! आपका खाता तुरंत अनबैन कर दिया गया है।"}
+    return {"status": "success", "msg": "OTP सत्यापित हुआ! खाता तुरंत एक्टिव कर दिया गया है।"}
 
 # ==============================================================================
-# 4. BOT 4 एडमिन मेनू
+# 5. BOT 4 एडमिन मेनू
 # ==============================================================================
 def get_admin_markup():
     markup = types.InlineKeyboardMarkup(row_width=2)
@@ -343,7 +403,7 @@ if bot4:
             message.chat.id,
             "╔════════════════════════════════╗\n"
             "   👑 *PRANAV JI - ALL SELECT SUPER ADMIN* 👑\n"
-            "   ⚡ _फुल एडमिन कंट्रोल & ऑटोमेशन सक्रिय_ ⚡\n"
+            "   ⚡ _फुल एडमिन कंट्रोल & Gmail OTP इंजन_ ⚡\n"
             "╚════════════════════════════════╝\n\n"
             "👇 हुक्म दें, प्रणव जी:",
             reply_markup=get_admin_markup(),
@@ -483,7 +543,7 @@ if bot4:
             bot4.send_message(m.chat.id, "❌ अमान्य रकम!", reply_markup=get_admin_markup())
 
 # ==============================================================================
-# 5. FLASK API (OTP अपील एंडपॉइंट्स)
+# 6. FLASK API (GMAIL OTP एंडपॉइंट्स)
 # ==============================================================================
 @app.after_request
 def apply_cors(resp):
@@ -496,24 +556,24 @@ def apply_cors(resp):
 def index():
     return jsonify({"status": "online", "system": "PRANAV SMM ALL SELECT ADMIN 24/7", "time": str(datetime.now())}), 200
 
-# 1. अपील और OTP रिक्वेस्ट
+# 1. अपील और Gmail OTP रिक्वेस्ट
 @app.route('/api/appeal', methods=['POST', 'OPTIONS'])
 def appeal_api():
     if request.method == 'OPTIONS':
         return jsonify({"status": "ok"}), 200
     user = request.form.get('username', 'User').strip()
     utr = request.form.get('utr', '').strip()
-    phone = request.form.get('phone', '').strip()
-    return jsonify(initiate_appeal_otp(user, utr, phone)), 200
+    email = request.form.get('email', '').strip()
+    return jsonify(initiate_appeal_gmail_otp(user, utr, email)), 200
 
-# 2. OTP सबमिट करके अनबैन
+# 2. OTP सबमिट करके सत्यापन व अनबैन
 @app.route('/api/verify-otp', methods=['POST', 'OPTIONS'])
 def verify_otp_api():
     if request.method == 'OPTIONS':
         return jsonify({"status": "ok"}), 200
     user = request.form.get('username', '').strip()
     otp = request.form.get('otp', '').strip()
-    return jsonify(verify_appeal_otp_and_unban(user, otp)), 200
+    return jsonify(verify_gmail_otp_and_unban(user, otp)), 200
 
 def self_ping_loop():
     time.sleep(30)
